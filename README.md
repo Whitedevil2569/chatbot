@@ -1,2 +1,2 @@
 # chatbot
-kipm college chatbot
+Ai Assistant for FAQ
