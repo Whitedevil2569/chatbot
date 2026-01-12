@@ -1,2 +1,3 @@
 # chatbot
-Ai Assistant for FAQ
+(kipm college of engineering & technology admission related Quiry chatbot. 
+FAQ chatbot 
