@@ -1,0 +1,61 @@
+{
+  "hello": "Hello! 😊 How can I assist you with KIPM today?",
+  "hi": "Hi there! 👋 How can I help you regarding KIPM?",
+  "hey": "Hey! 🙌 What would you like to know about KIPM?",
+  "good morning": "Good morning! ☀️ How can I help you with KIPM admissions?",
+  "good afternoon": "Good afternoon! 🌞 How can I assist you today?",
+  "good evening": "Good evening! 🌙 Need any information about KIPM?",
+  "how are you": [
+    "I'm just a bot, but I'm here and ready to help you with KIPM information! 🤖",
+    "I'm doing great! Ready to help you with your KIPM queries! 😃"
+  ],
+  "who are you": "I'm the KIPM Admission Chatbot 🤖, here to assist you with all your college queries.",
+  "what can you do": "I can answer your questions about KIPM admissions, courses, fees, campus life, and more! 🎓",
+  "tell me a joke": [
+    "Why did the student eat his homework? Because the teacher said it was a piece of cake! 🍰😂",
+    "Why was the math book sad? Because it had too many problems! 📚😅"
+  ],
+  "you are smart": "Thank you! 🧠 I do my best to help you.",
+  "you are helpful": "I'm glad to be of assistance! 😊",
+  "i am confused": "No worries! 😌 Please tell me what you need help with regarding KIPM.",
+  "i am lost": "I'm here to guide you. 🗺️ What would you like to know about KIPM?",
+  "can you help me": "Absolutely! 🙋‍♂️ Please type your question about KIPM admissions or campus.",
+  "thank you": [
+    "You're very welcome! Let me know if you have more questions about KIPM. 😊",
+    "Happy to help! Good luck with your admission journey! 🎓",
+    "Anytime! Feel free to ask about fees or placements next."
+  ],
+  "thanks": "You're welcome! Is there anything else I can assist you with? 💁‍♂️",
+  "thx": "No problem at all! Happy to help. 👍",
+  "bye": [
+    "Goodbye! Hope to see you on campus soon! 👋",
+    "Bye! Have a great day ahead! ☀️",
+    "See you! Don't forget to check our website for updates. 🌐"
+  ],
+  "goodbye": "Goodbye! Feel free to come back if you have more doubts. 👋",
+  "see you": "See you later! All the best! 🌟",
+  "ok": "Okay! What would you like to know next? 🤔",
+  "okay": "Great! Do you have any other questions regarding courses or hostels?",
+  "cool": "Glad you think so! 😎 KIPM is a pretty cool place to study too!",
+  "nice": "Thanks! 😊 I try my best.",
+  "wow": "I know, right? KIPM has some amazing facilities! 🤩",
+  "really": "Yes, really! We strive for excellence at KIPM. 🏆",
+  "i love you": "That's so sweet! 🥰 I love helping future engineers and managers!",
+  "will you marry me": "I'm flattered, but I'm married to my job at KIPM! 💍😂",
+  "what is your age": "I was born in the digital age! So I'm forever young. 👶💻",
+  "talk to human": "If you want to speak to a real person, please call our admission cell at +91-8009902938. 📞",
+  "contact support": "You can reach our support team at info@kipm.edu.in or call +91-8009902938. 📧",
+  "i am angry": "I'm sorry to hear that. 😔 Please tell me what went wrong, or contact our administration for help.",
+  "you are bad": "I apologize if I made a mistake. I'm still learning! 🙏 Please ask your question again.",
+  "you are wrong": "My apologies! Please check the official website www.kipm.edu.in for the most current verification. 🔍",
+  "menu": "Here are some things you can ask me about:\n1. Fee Structure 💰\n2. Placements 💼\n3. Hostel Facilities 🏠\n4. Admission Process 📝\n5. Courses Offered 📚",
+  "options": "Sure! You can ask about B.Tech, Pharmacy, MBA, Diploma, or general Campus Life. What interests you?",
+  "help": "I'm here! Try asking 'What is the fee for B.Tech?' or 'How is the placement?'. 🙋‍♂️",
+  "website": "You can visit our official website here: www.kipm.edu.in 🌐",
+  "where are you": "I live in the cloud ☁️, but KIPM College is located in GIDA, Gorakhpur!",
+  "apply now": "That's a great decision! You can apply online at www.kipm.edu.in or visit the campus. 📝",
+  "good night": "Good night! 😴 Dream big and we'll chat again tomorrow!",
+  "boring": "Oh no! Let me spice things up. Did you know KIPM organizes amazing fests like Fiesta? 🎉",
+  "haha": "I'm glad I could make you smile! 😄 Admission stress can be tough, but we got this!",
+  "lol": "Glad to see you in a good mood! 😂 Ready for some serious college info now?"
+}
