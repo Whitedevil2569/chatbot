@@ -1,315 +1,438 @@
 import nltk
 from nltk.tokenize import word_tokenize
 from flask import Flask, render_template, request, jsonify, session
+from flask_session import Session
+from flask_cors import CORS
 import json
 import os
-import openpyxl
-from rapidfuzz import process, fuzz
-from nltk.corpus import wordnet
+import sqlite3
 import requests
-import numpy as nk
 import random
-#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
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from rapidfuzz import fuzz
+
+import matplotlib
+matplotlib.use('Agg') # Essential for server environments
+import matplotlib.pyplot as plt
+import pandas as pd
+import io
+from datetime import datetime
+
+# --- CONFIGURATION ---
+TELEGRAM_BOT_TOKEN = 'your_bot_token_on_telegrame'  
+TELEGRAM_CHAT_ID = 'telegram_bot_id'       
+DATABASE = os.path.join(os.path.dirname(__file__), 'chatbot.db')
 
 app = Flask(__name__)
+CORS(app)
 app.secret_key = 'your_secret_key_here'
-# Ensure required NLTK data is available (download if missing)
-try:
-    nltk.data.find("corpora/wordnet")
-except LookupError:
-    nltk.download("wordnet")
-    nltk.download("omw-1.4")
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['SESSION_FILE_DIR'] = os.path.join(os.path.dirname(__file__), 'sessions')
 
+# Fix: Create session directory if it doesn't exist
+os.makedirs(app.config['SESSION_FILE_DIR'], exist_ok=True)
+
+Session(app)
+
+
+# --- DATABASE INITIALIZATION ---
+def init_db():
+    with sqlite3.connect(DATABASE) as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS enquiries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            course TEXT NOT NULL
+        )''')
+       
+        conn.execute('''CREATE TABLE IF NOT EXISTS callbacks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            preferred_time TEXT NOT NULL
+        )''')
+       
+        conn.execute('''CREATE TABLE IF NOT EXISTS queries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_query TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )''')
+        conn.commit()
+
+init_db()
+
+# --- TELEGRAM FUNCTIONS ---
+def send_telegram_alert(message_body):
+    """Sends a text message to Telegram"""
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message_body,
+            "parse_mode": "Markdown"
+        }
+        requests.post(url, json=payload)
+        print("✅ Telegram alert sent!")
+    except Exception as e:
+        print(f"❌ Telegram Error: {e}")
+
+def generate_and_send_telegram_report():
+    """Generates the bar chart and sends it to Telegram"""
+    try:
+        # 1. Fetch Data
+        conn = sqlite3.connect(DATABASE)
+        df = pd.read_sql_query("SELECT user_query FROM queries", conn)
+        conn.close()
+
+        if df.empty:
+            return "No data available to generate report."
+
+        # 2. Analyze
+        top_queries = df['user_query'].str.lower().value_counts().head(5)
+        
+        # 3. Plot
+        plt.figure(figsize=(10, 6))
+        colors = ['#4F46E5', '#6366F1', '#818CF8', '#A5B4FC', '#C7D2FE']
+        ax = top_queries.plot(kind='bar', color=colors, edgecolor='black', alpha=0.8)
+        
+        plt.title('Top 5 Most Asked Questions', fontsize=16, fontweight='bold', pad=20)
+        plt.xlabel('Question Topic', fontsize=12)
+        plt.ylabel('Frequency', fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        plt.grid(axis='y', linestyle='--', alpha=0.3)
+        plt.tight_layout()
+
+        # 4. Save to buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=100)
+        buf.seek(0)
+        plt.close()
+
+        # 5. Send to Telegram
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+        files = {'photo': ('report.png', buf, 'image/png')}
+        caption = f"📊 *Live Analytics Report*\n\nTotal Queries Processed: {len(df)}\nTop Trend: *{top_queries.index[0].title()}*"
+        
+        data = {
+            'chat_id': TELEGRAM_CHAT_ID, 
+            'caption': caption, 
+            'parse_mode': 'Markdown'
+        }
+        
+        requests.post(url, files=files, data=data)
+        return "Report sent to Telegram successfully!"
+
+    except Exception as e:
+        print(f"Reporting Error: {e}")
+        return f"Error: {str(e)}"
+
+# --- NLP SETUP ---
 try:
     nltk.data.find("tokenizers/punkt")
 except LookupError:
     nltk.download("punkt")
 
-# Load FAQs safely
 FAQS = []
 faq_path = os.path.join(os.path.dirname(__file__), "admission_faq.json")
 try:
     with open(faq_path, "r", encoding="utf-8") as f:
         FAQS = json.load(f)
-except FileNotFoundError:
-    print(f"Warning: FAQ file not found at {faq_path}. Continuing with empty FAQ list.")
-except json.JSONDecodeError as e:
-    print(f"Warning: Could not parse FAQ file {faq_path}: {e}. Continuing with empty FAQ list.")
+    print(f"✅ Loaded {len(FAQS)} FAQs from database.")
+except Exception as e:
+    print(f"❌ Error loading FAQs: {e}")
 
-@app.route("/admission_enquiry", methods=["POST"])
-def admission_enquiry():
-    data = request.get_json()
-    name = data.get("name", "")
-    email = data.get("email", "")
-    phone = data.get("phone", "")
-    course = data.get("course", "")
-    enquiry = {"name": name, "email": email, "phone": phone, "course": course}
-    try:
-        excel_path = "admission_enquiries.xlsx"
-        if not os.path.exists(excel_path):
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = "Admission Enquiries"
-            ws.append(["Name", "Email", "Phone", "Course"])
-            wb.save(excel_path)
-        wb = openpyxl.load_workbook(excel_path)
-        ws = wb.active
-        ws.append([name, email, phone, course])
-        wb.save(excel_path)
-        return jsonify({"success": True, "message": "Admission enquiry submitted successfully!", "details": enquiry})
-    except Exception as e:
-        return jsonify({"success": False, "message": f"Failed to submit admission enquiry: {e}"}), 500
+small_talk = {}
+small_talk_path = os.path.join(os.path.dirname(__file__), "small_talk.json")
+try:
+    with open(small_talk_path, "r", encoding="utf-8") as f:
+        small_talk = json.load(f)
+except Exception as e:
+    print(f"⚠️ Error loading Small Talk: {e}")
 
-@app.route("/book_callback", methods=["POST"])
-def book_callback():
-    data = request.get_json()
-    name = data.get("name", "")
-    phone = data.get("phone", "")
-    preferred_time = data.get("preferred_time", "")
-    callback = {"name": name, "phone": phone, "preferred_time": preferred_time}
+questions_list = []
+answers_map = {} 
+
+def preprocess_text(text):
+    if not isinstance(text, str): return ""
+    return text.lower().strip()
+
+for faq in FAQS:
+    if faq.get('question_en'):
+        questions_list.append(faq['question_en'])
+        answers_map[len(questions_list)-1] = faq
+    elif faq.get('question'):
+        questions_list.append(faq['question'])
+        answers_map[len(questions_list)-1] = faq
+    
+    if faq.get('question_hi'):
+        questions_list.append(faq['question_hi'])
+        answers_map[len(questions_list)-1] = faq
+
+vectorizer = TfidfVectorizer(stop_words='english')
+tfidf_matrix = None
+
+if questions_list:
     try:
+        tfidf_matrix = vectorizer.fit_transform(questions_list)
+        print("✅ Search Engine Initialized Successfully")
+    except ValueError:
+        print("⚠️ Warning: Empty vocabulary.")
+
+# --- HELPER FUNCTIONS ---
+
+def handle_eligibility_flow(question):
+    """Handles the eligibility checker flow"""
+    step = session.get('eligibility_step')
+    
+    if step == 'ask_stream':
+        session['eligibility_stream'] = question.upper()
+        session['eligibility_step'] = 'ask_percentage'
+        return jsonify({
+            "answer": "What is your 12th percentage?",
+            "suggestions": []
+        })
+    
+    elif step == 'ask_percentage':
         try:
-            with open("callbacks.json", "r", encoding="utf-8") as f:
-                callbacks = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            callbacks = []
-        callbacks.append(callback)
-        with open("callbacks.json", "w", encoding="utf-8") as f:
-            json.dump(callbacks, f, ensure_ascii=False, indent=2)
-
-        excel_path = "callbacks.xlsx"
-        try:
-            if not os.path.exists(excel_path):
-                wb = openpyxl.Workbook()
-                ws = wb.active
-                ws.title = "Callbacks"
-                ws.append(["Name", "Phone", "Preferred Time"])
-                wb.save(excel_path)
-            wb = openpyxl.load_workbook(excel_path)
-            ws = wb.active
-            ws.append([name, phone, preferred_time])
-            wb.save(excel_path)
-        except Exception as excel_error:
-            pass  
-
-        return jsonify({"success": True, "message": "Callback appointment booked successfully!", "details": callback})
-    except Exception as e:
-        return jsonify({"success": False, "message": f"Failed to book callback: {e}"}), 500
-
-def get_related_questions(idx, questions, topn=3):
-    scores = [(i, fuzz.token_sort_ratio(questions[idx], q)) for i, q in enumerate(questions) if i != idx]
-    scores.sort(key=lambda x: x[1], reverse=True)
-    related = [questions[i] for i, s in scores[:topn]]
-    return related
-
-def fetch_college_info(query):
-    small_talk = {
-        "hello": "Hello! 😊 How can I assist you with KIPM today?",
-        "hi": "Hi there! 👋 How can I help you regarding KIPM?",
-        "hey": "Hey! 🙌 What would you like to know about KIPM?",
-        "good morning": "Good morning! ☀️ How can I help you with KIPM admissions?",
-        "good afternoon": "Good afternoon! 🌞 How can I assist you today?",
-        "good evening": "Good evening! 🌙 Need any information about KIPM?",
-        "how are you": random.choice([
-            "I'm just a bot, but I'm here and ready to help you with KIPM information! 🤖",
-            "I'm doing great! Ready to help you with your KIPM queries! 😃"
-        ]),
-        "who are you": "I'm the KIPM Admission Chatbot 🤖, here to assist you with all your college queries.",
-        "what can you do": "I can answer your questions about KIPM admissions, courses, fees, campus life, and more! 🎓",
-        "tell me a joke": random.choice([
-            "Why did the student eat his homework? Because the teacher said it was a piece of cake! 🍰😂",
-            "Why was the math book sad? Because it had too many problems! 📚😅"
-        ]),
-        "you are smart": "Thank you! 🧠 I do my best to help you.",
-        "you are helpful": "I'm glad to be of assistance! 😊",
-        "i am confused": "No worries! 😌 Please tell me what you need help with regarding KIPM.",
-        "i am lost": "I'm here to guide you. 🗺️ What would you like to know about KIPM?",
-        "can you help me": "Absolutely! 🙋‍♂️ Please type your question about KIPM admissions or campus."
-    }
-    norm_query = query.lower().strip()
-    if norm_query in small_talk and len(norm_query.split()) <= 5:
-        return small_talk[norm_query]
-    try:
-        def normalize(text):
-            return ' '.join(text.lower().strip().split()) if isinstance(text, str) else ''
-        def get_synonyms(word):
-            try:
-                syns = set()
-                for syn in wordnet.synsets(word):
-                    for lemma in syn.lemmas():
-                        name = lemma.name()
-                        if isinstance(name, str):
-                            syns.add(name.replace('_', ' '))
-                return syns
-            except Exception:
-                # If wordnet is missing at runtime, attempt to download and retry once
-                try:
-                    nltk.download("wordnet")
-                    nltk.download("omw-1.4")
-                    syns = set()
-                    for syn in wordnet.synsets(word):
-                        for lemma in syn.lemmas():
-                            name = lemma.name()
-                            if isinstance(name, str):
-                                syns.add(name.replace('_', ' '))
-                    return syns
-                except Exception:
-                    return set()
-        query_words = set(normalize(query).split())
-        all_synonyms = set()
-        for word in query_words:
-            all_synonyms.update(get_synonyms(word))
-        all_words = query_words | all_synonyms
-
-        faqs = FAQS
-
-        questions_en = [faq.get('question_en') for faq in faqs if faq.get('question_en')]
-        answers_en = [faq.get('answer_en') for faq in faqs if faq.get('answer_en')]
-        legacy_questions = [faq.get('question') for faq in faqs if faq.get('question')]
-        legacy_answers = [faq.get('answer') for faq in faqs if faq.get('answer')]
-        all_questions_en = questions_en + legacy_questions
-        all_answers_en = answers_en + legacy_answers
-        norm_questions_en = [normalize(q) for q in all_questions_en]
-        norm_answers_en = [normalize(a) for a in all_answers_en]
-
-        questions_hi = [faq.get('question_hi') for faq in faqs if faq.get('question_hi')]
-        answers_hi = [faq.get('answer_hi') for faq in faqs if faq.get('answer_hi')]
-        norm_questions_hi = [normalize(q) for q in questions_hi]
-        norm_answers_hi = [normalize(a) for a in answers_hi]
-        is_hindi = any(ord(char) >= 0x0900 and ord(char) <= 0x097F for char in query) or any(word in query_words for word in {'hai', 'kya', 'ka', 'mein', 'se', 'aur', 'ke', 'hain'})
-        if is_hindi:
-            questions = questions_hi
-            answers = answers_hi
-            norm_questions = norm_questions_hi
-            norm_answers = norm_answers_hi
+            # Clean percentage input
+            clean_input = question.replace('%', '').strip()
+            percentage = float(clean_input)
+            session['eligibility_percentage'] = percentage
+            session['eligibility_step'] = 'ask_category'
+            return jsonify({
+                "answer": "What is your category (General/OBC/SC/ST)?",
+                "suggestions": []
+            })
+        except ValueError:
+            return jsonify({
+                "answer": "Please enter a valid percentage number (e.g. 75).",
+                "suggestions": []
+            })
+    
+    elif step == 'ask_category':
+        session['eligibility_category'] = question.upper()
+        stream = session.get('eligibility_stream', 'N/A')
+        percentage = session.get('eligibility_percentage', 0)
+        category = question.upper()
+        
+        # Simple Logic for Eligibility
+        eligible_msg = ""
+        if percentage >= 45:
+             eligible_msg = "You seem eligible for most undergraduate courses!"
         else:
-            questions = all_questions_en
-            answers = all_answers_en
-            norm_questions = norm_questions_en
-            norm_answers = norm_answers_en
+             eligible_msg = "You might need to contact the admission office for specific criteria."
 
-        threshold = 80
-        best_idx = None
-        best_score = 0
-        for idx, q in enumerate(norm_questions):
-            score = fuzz.token_sort_ratio(q, normalize(query))
-            if score > best_score:
-                best_score = score
-                best_idx = idx
-        if best_score >= threshold and best_idx is not None:
-            answer = answers[best_idx] if best_idx < len(answers) else ""
-            
-            encouragements = [
-                "Let me know if you have more questions! 🤗",
-                "Feel free to ask anything else about KIPM! 💬",
-                "I'm here if you need more info! 👍",
-                "Hope this helps! 😊"
-            ]
-            answer = answer + " " + random.choice(["😊", "👍", "🎉", "🙌"])
+        result = f"Based on your details (Stream: {stream}, Percentage: {percentage}%, Category: {category}), {eligible_msg} Please contact our admission cell for final confirmation at 8009902938."
+        
+        # Clear Session
+        session.pop('eligibility_step', None)
+        session.pop('eligibility_stream', None)
+        session.pop('eligibility_percentage', None)
+        session.pop('eligibility_category', None)
+        
+        return jsonify({
+            "answer": result,
+            "suggestions": []
+        })
+    
+    return jsonify({
+        "answer": "Please start over with 'check eligibility'",
+        "suggestions": []
+    })
 
-            # related suggestions
-            def get_related(idx, questions, topn=3):
-                scores = [(i, fuzz.token_sort_ratio(questions[idx], q)) for i, q in enumerate(questions) if i != idx]
-                scores.sort(key=lambda x: x[1], reverse=True)
-                return [questions[i] for i, s in scores[:topn]]
-            related = get_related(best_idx, questions) if questions else []
-            if related:
-                suggestion_text = " 💡 You may also ask: " + " | ".join(related)
-                answer += suggestion_text
+def get_best_match(user_query):
+    user_query = preprocess_text(user_query)
+    
+    # 1. Check Small Talk
+    if user_query in small_talk:
+        resp = small_talk[user_query]
+        return (random.choice(resp) if isinstance(resp, list) else resp), 100, []
 
-            answer += " " + random.choice(encouragements)
-            session['unanswered_count'] = 0
-            return answer
-        else:
+    if tfidf_matrix is None:
+        return None, 0, []
 
-            OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")  
-            if OPENAI_API_KEY:
-                try:
-                    headers = {
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json"
-                    }
-                    data = {
-                        "model": "gpt-3.5-turbo",
-                        "messages": [
-                            {"role": "system", "content": "You are a helpful college admission assistant for KIPM."},
-                            {"role": "user", "content": query}
-                        ]
-                    }
-                    response = requests.post(
-                        "https://api.openai.com/v1/chat/completions",
-                        headers=headers,
-                        json=data,
-                        timeout=15
-                    )
-                    if response.status_code == 200:
-                        llm_answer = response.json()["choices"][0]["message"]["content"]
-                        return llm_answer + " 🤖"
-                    else:
-                        return (
-                            "Sorry, i could't understand your Enquiry. If you any other doubt tell me i can help with us. Thank You 😔"
-                            "Please visit the official KIPM website for more information:🌐"
-                        )
-                except Exception as llm_error:
-                    return (
-                        "Sorry, I couldn't find an exact answer to your question in our database. 😔"
-                        "Please visit the official KIPM website for more information:🌐"
-                    )
-            else:
-                return (
-                    "Sorry, I couldn't find an exact answer to your question in our database. 😔"
-                    "Please visit the official KIPM website for more information: "
-                    "🌐"
-                )
-    except Exception as e:
-        return f"Error reading FAQ data: {e} 😅"
+    # 2. TF-IDF Search
+    user_vec = vectorizer.transform([user_query])
+    cosine_sims = cosine_similarity(user_vec, tfidf_matrix).flatten()
+    
+    related_indices = cosine_sims.argsort()[::-1]
+    best_idx = related_indices[0]
+    best_score = cosine_sims[best_idx] * 100 
+
+    # 3. Fuzzy Fallback
+    if best_score < 60:
+        fuzzy_best_score = 0
+        fuzzy_best_idx = -1
+        check_limit = min(len(questions_list), 200) 
+        for i in range(check_limit): 
+            score = fuzz.token_set_ratio(user_query, questions_list[i])
+            if score > fuzzy_best_score:
+                fuzzy_best_score = score
+                fuzzy_best_idx = i
+        
+        if fuzzy_best_score > best_score:
+            best_score = fuzzy_best_score
+            best_idx = fuzzy_best_idx
+
+    matched_faq = answers_map[best_idx]
+    
+    # Hindi Detection
+    hindi_keywords = ['kya', 'hai', 'ka', 'kaise', 'fees', 'kitna', 'kahan', 'kab']
+    user_is_speaking_hindi = any(w in user_query for w in hindi_keywords)
+    
+    if user_is_speaking_hindi and matched_faq.get('answer_hi'):
+        answer_text = matched_faq.get('answer_hi')
+    else:
+        answer_text = matched_faq.get('answer_en') or matched_faq.get('answer')
+    
+    # Generate Suggestions
+    suggestion_pool_indices = related_indices[1:16]
+    valid_suggestions = []
+    seen_suggestions = set()
+
+    for i in suggestion_pool_indices:
+        if cosine_sims[i] > 0.1:
+            q_text = questions_list[i]
+            if q_text not in seen_suggestions:
+                valid_suggestions.append(q_text)
+                seen_suggestions.add(q_text)
+
+    final_suggestions = []
+    if valid_suggestions:
+        count = min(len(valid_suggestions), 3)
+        final_suggestions = random.sample(valid_suggestions, count)
+
+    return answer_text, best_score, final_suggestions
+
+# --- ROUTE HANDLERS ---
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
-from flask import session
+@app.route("/admission_enquiry", methods=["POST"])
+def admission_enquiry():
+    data = request.get_json()
+    try:
+        with sqlite3.connect(DATABASE) as conn:
+            conn.execute('INSERT INTO enquiries (name, email, phone, course) VALUES (?, ?, ?, ?)',
+                         (data.get("name"), data.get("email"), data.get("phone"), data.get("course")))
+            conn.commit()
+        
+        msg = (
+            f"🚀 *New Admission Enquiry*\n"
+            f"------------------\n"
+            f"👤 Name: `{data.get('name')}`\n"
+            f"📱 Phone: `{data.get('phone')}`\n"
+            f"📧 Email: `{data.get('email')}`\n"
+            f"🎓 Course: `{data.get('course')}`"
+        )
+        send_telegram_alert(msg)
 
+        return jsonify({"success": True, "message": "Enquiry submitted! We will contact you soon."})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route("/book_callback", methods=["POST"])
+def book_callback():
+    data = request.get_json()
+    try:
+        with sqlite3.connect(DATABASE) as conn:
+            conn.execute('INSERT INTO callbacks (name, phone, preferred_time) VALUES (?, ?, ?)',
+                         (data.get("name"), data.get("phone"), data.get("preferred_time")))
+            conn.commit()
+            
+        msg = (
+            f"📞 *New Callback Request*\n"
+            f"------------------\n"
+            f"👤 Name: `{data.get('name')}`\n"
+            f"📱 Phone: `{data.get('phone')}`\n"
+            f"⏰ Time: `{data.get('preferred_time')}`"
+        )
+        send_telegram_alert(msg)
+
+        return jsonify({"success": True, "message": "Callback booked successfully!"})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route("/admin/report", methods=["GET"])
+def trigger_report():
+    status = generate_and_send_telegram_report()
+    return jsonify({"status": status})
 @app.route("/ask", methods=["POST"])
 def ask():
     data = request.get_json()
-    question = data.get("question", "").strip().lower()
+    question = data.get("question", "").strip()
+
+    # 1. LOGGING
+    try:
+        with sqlite3.connect(DATABASE) as conn:
+            conn.execute("INSERT INTO queries (user_query) VALUES (?)", (question,))
+            conn.commit()
+    except Exception as e:
+        print(f"Logging error: {e}")
+
+    # 2. CONTINUE FLOW (If already chatting)
+    if session.get('eligibility_step'):
+        return handle_eligibility_flow(question)
     
-    if session.get('eligibility_step') == 'ask_stream':
-        stream = question
-        session['eligibility_stream'] = stream
-        session['eligibility_step'] = 'ask_marks'
-        return jsonify({"answer": "Please enter your 12th percentage or marks (e.g. 78%)"})
-    elif session.get('eligibility_step') == 'ask_marks':
-        marks = question.replace('%','').replace('percent','').strip()
-        try:
-            marks = float(marks)
-        except:
-            return jsonify({"answer": "Please enter a valid number for your marks or percentage."})
-        stream = session.get('eligibility_stream','')
-        session.pop('eligibility_step', None)
-        
-        eligible = []
-        if marks >= 45 and ('pcm' in stream or 'science' in stream or 'math' in stream):
-            eligible.append('B.Tech (any branch)')
-        if marks >= 40 and ('commerce' in stream or 'arts' in stream or 'any' in stream or 'all' in stream or 'science' in stream):
-            eligible.append('BBA')
-            eligible.append('BCA')
-        if marks >= 50:
-            eligible.append('MBA (if you are a graduate)')
-        if eligible:
-            return jsonify({"answer": "Based on your stream and marks, you are eligible for: " + ', '.join(eligible)})
-        else:
-            return jsonify({"answer": "Sorry, you do not meet the eligibility criteria for our main courses. Please contact the admission office for more options."})
+    # 3. SMART TRIGGER FOR ELIGIBILITY TOOL
+    q_lower = question.lower()
     
-    if 'eligibility' in question or 'eligible' in question or 'check admission' in question or 'can i apply' in question:
+    # Define keywords that mean "Run the tool"
+    # We include "eligibility" here so even a single word triggers it.
+    tool_keywords = [
+        'check eligibility', 'am i eligible', 'can i apply', 
+        'eligibility checker', 'eligibility check', 'check admission',
+        'eligibility', 'eligible', 'eligiblity' # Added common typo
+    ]
+    
+    # A. Check for exact text matches
+    direct_match = any(phrase in q_lower for phrase in tool_keywords)
+    
+    # B. Check for Fuzzy Matches (Handles bad spelling like "eligiblty")
+    # We check if the user's input is at least 85% similar to "check eligibility"
+    fuzzy_score = fuzz.token_set_ratio("check eligibility", q_lower)
+    
+    # If the user is specifically asking about a course (e.g., "eligibility for MBA"), 
+    # we might want to show the FAQ answer instead of the tool.
+    is_specific_course_query = any(c in q_lower for c in ['mba', 'b.tech', 'btech', 'bca', 'bba', 'diploma', 'pharmacy'])
+
+    # LOGIC: 
+    # If it matches keywords AND isn't a specific question like "eligibility for MBA" -> Run Tool
+    # OR if the fuzzy score is very high (user meant "check eligibility") -> Run Tool
+    if (direct_match and not is_specific_course_query) or fuzzy_score > 85:
         session['eligibility_step'] = 'ask_stream'
-        return jsonify({"answer": "To check your eligibility, please enter your 12th stream (e.g. PCM, Science, Commerce, Arts)"})
+        return jsonify({
+            "answer": "To check your eligibility, please tell me your 12th stream (e.g. PCM, PCB, Commerce, Arts).",
+            "suggestions": ["PCM", "Commerce", "PCB"] 
+        })
 
-    answer = fetch_college_info(question)
-    return jsonify({"answer": answer})
+    # 4. STANDARD SEARCH (Database FAQ)
+    answer, score, suggestions = get_best_match(question)
+    
+    # If standard search found nothing good, but the user mentioned "eligibility", default to tool
+    if score < 50 and "eligib" in q_lower:
+         session['eligibility_step'] = 'ask_stream'
+         return jsonify({
+            "answer": "I can help check your eligibility. What was your stream in 12th class?",
+            "suggestions": ["Science", "Commerce", "Arts"] 
+        })
 
+    response_text = ""
+    if score > 60:
+        response_text = f"{answer}"
+    elif score > 40:
+        response_text = f"I'm not 100% sure, but here is the closest info I found:\n\n{answer}"
+    else:
+        response_text = "Sorry, I couldn't find an answer. Please contact admission cell at 8009902938."
+
+    return jsonify({
+        "answer": response_text,
+        "suggestions": suggestions
+    })
 if __name__ == "__main__":
-    app.run(debug=True, port=5050)
-
-
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
